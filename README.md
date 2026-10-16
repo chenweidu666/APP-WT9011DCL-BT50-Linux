@@ -105,21 +105,28 @@ wt9011/
 └── gui.py        PySide6 图形界面（BLE 跑在独立 QThread 的 asyncio 事件循环里）
 tests/
 └── test_protocol.py  协议解析/组包单测（用文档里的字节样例做断言）
-docs/            厂商协议文档镜像（清洗版）
+tools/
+└── smoke_gui.py      界面冒烟测试（offscreen + 模拟数据，可出截图）
+docs/            厂商协议文档镜像（清洗版）+ 界面截图
 ```
 
 ## 验证情况
 
+![界面截图（模拟数据）](docs/screenshot-gui.png)
+
 ```bash
-python3 -m unittest discover -s tests -v     # 17 项协议单测
-./run.sh cli stream --mock --seconds 3       # 命令行 + 模拟数据
-./run.sh --mock                              # 界面 + 模拟数据
+python3 -m unittest discover -s tests -v          # 17 项协议单测
+python3 tools/smoke_gui.py --screenshot /tmp/gui.png   # 界面冒烟（offscreen，模拟数据，含关闭流程）
+./run.sh cli stream --mock --seconds 3            # 命令行 + 模拟数据
+./run.sh --mock                                   # 界面 + 模拟数据（有显示器时）
 ```
 
-- ✅ 协议单测全通过（含文档样例：磁场帧 `55713A00680169007A00` → 360/105/122；版本号样例 → `10080.1.3`）
-- ✅ BLE 扫描在本机可用（`BleakScanner` 能扫到周围设备，无需 root）
-- ✅ GUI 在模拟数据下运行正常
-- ⏳ 真实硬件（WT9011DCL-BT50）连通性待现场验证：传感器开机 → `./run.sh cli scan` 看是否出现 `WT…` 设备
+实测结果：
+
+- ✅ 协议单测 17/17 通过（含文档样例：磁场帧 `55713A00680169007A00` → 360/105/122；版本号样例 → `10080.1.3`；各条指令字节与文档一致）
+- ✅ `BleakScanner` 在本机可直接扫描（无需 root），能列出周围 BLE 设备
+- ✅ 界面在模拟数据下运行正常：数值刷新、曲线、姿态仪、CSV 记录（10 Hz → 15 行/1.5 s）、窗口关闭 0.3 s 内正常退出、无异常
+- ⏳ **真实硬件连通性待现场验证**：传感器开机 → `./run.sh cli scan`，应出现 `WT…` 设备
 
 ## 已知限制
 

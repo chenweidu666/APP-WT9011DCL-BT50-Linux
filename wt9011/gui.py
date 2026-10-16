@@ -709,18 +709,27 @@ class MainWindow(QMainWindow):
         self.log.append(f"[{time.strftime('%H:%M:%S')}] {msg}")
 
     def closeEvent(self, event) -> None:
+        # 第一次关闭：先断开蓝牙、停掉定时器，再真正退出；
+        # 第二次（_finish_close 里再次 close）直接放行，避免无限重入。
+        if getattr(self, "_closing", False):
+            event.accept()
+            return
+        self._closing = True
         self.aux_timer.stop()
         self.ui_timer.stop()
         if self.record_fh:
             self._flush_record()
             self.record_fh.close()
-        self.worker.submit(lambda: self.worker.client.disconnect() if self.worker.client else asyncio.sleep(0))
+            self.record_fh = None
+            self.record_writer = None
+        self.worker.submit(lambda: self.worker.client.disconnect()
+                           if self.worker.client else asyncio.sleep(0))
         QTimer.singleShot(300, self._finish_close)
         event.ignore()
 
     def _finish_close(self) -> None:
         self.worker.shutdown()
-        QApplication.instance().quit()
+        self.close()  # 第二次 closeEvent 会 accept，窗口关闭后事件循环自然退出
 
 
 def main(argv: Optional[List[str]] = None) -> int:
