@@ -163,6 +163,12 @@ class WitClient:
         if target:
             self.address = target
             await self._ensure_trusted(target)
+            # 设备若显示"已连接"而我们手里没有连接（上次进程被 kill / 别的程序占用），
+            # 先释放掉这条残留链路，否则新连接会一直失败或扫不到设备。
+            loop = asyncio.get_running_loop()
+            if await loop.run_in_executor(None, _bluetooth_connected_state, target) is True:
+                self._log("设备当前状态为“已连接”（可能是上次未正常断开的残留），先释放…")
+                await loop.run_in_executor(None, clear_pending_connection, target)
             last_error: Optional[Exception] = None
             for round_no in range(1, max(1, attempts) + 1):
                 if not force_scan:

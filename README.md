@@ -1,5 +1,8 @@
 # WT9011DCL-BT50 Linux 上位机
 
+[![CI](https://github.com/chenweidu666/APP-WT9011DCL-BT50-Linux/actions/workflows/ci.yml/badge.svg)](https://github.com/chenweidu666/APP-WT9011DCL-BT50-Linux/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 维特智能（WitMotion）**WT9011DCL-BT50** 蓝牙 5.0 姿态传感器的 Linux 端上位机替代品。
 
 - 仓库：<https://github.com/chenweidu666/APP-WT9011DCL-BT50-Linux>
