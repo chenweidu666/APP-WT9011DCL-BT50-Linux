@@ -6,6 +6,7 @@
 维特智能（WitMotion）**WT9011DCL-BT50** 蓝牙 5.0 姿态传感器的 Linux 端上位机替代品。
 
 - 仓库：<https://github.com/chenweidu666/APP-WT9011DCL-BT50-Linux>
+- 文档：<https://github.com/chenweidu666/APP-WT9011DCL-BT50-Linux-Docs>（协议参考 / 寄存器速查 / 排错手册 / 实测记录）
 - 许可：[MIT](LICENSE)（第三方独立实现，与厂商无隶属关系）
 
 厂商只提供 Windows 上位机（`WitMotion(V2026.9.30.0).zip`，.NET Framework 4.6.2 + WPF），
