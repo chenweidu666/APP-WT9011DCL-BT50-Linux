@@ -79,7 +79,36 @@ pip install -e .
 ./run.sh cli stream --mock               # 无硬件演示
 ```
 
-## 协议实现要点
+## 安装到 Ubuntu 应用菜单（可选）
+
+```bash
+./install-desktop.sh              # 安装/更新
+./install-desktop.sh --uninstall   # 卸载
+```
+
+安装后（全部在用户目录，不需要 sudo）：
+
+| 位置 | 内容 |
+|---|---|
+| `~/.local/share/applications/wt9011-bt50.desktop` | 应用菜单条目「WT9011 上位机」 |
+| `~/.local/share/icons/hicolor/.../apps/wt9011-bt50.{svg,png}` | 应用图标 |
+| `~/.local/bin/wt9011` | 命令行入口（scan/stream/read/write/calib…） |
+| `~/.local/bin/wt9011-gui` | 图形界面入口 |
+
+脚本会自动挑一个装了 `bleak + PySide6 + pyqtgraph` 的解释器并写进启动器，
+所以在最小 PATH 的应用菜单环境里也能正常启动。
+
+## 常见问题（BLE/BlueZ 相关）
+
+| 现象 | 原因与处理 |
+|---|---|
+| `org.bluez.Error.InProgress` / `Operation already in progress` | BlueZ 里还挂着一次半连接（在 GNOME 蓝牙设置里点过这个设备最常见）。客户端会**自动**执行 `bluetoothctl disconnect <地址>` 清掉再重试；也可手动清：`bluetoothctl disconnect EE:AA:BB:...`，实在不行 `sudo systemctl restart bluetooth`。 |
+| 第一次能连，之后 `scan` 扫不到设备 | 维特 BLE 模块连过一次后常常停止广播。本程序默认**不扫描、直接按地址连**（`BleakClient(address)`），所以照常能连；只要别把地址忘了（界面会自动记住上次设备）。 |
+| 手机 App / Windows 上位机 / GNOME 蓝牙面板连过之后连不上 | BLE 只允许一个中心设备。先在对方断开（GNOME：蓝牙设置里那个设备点“断开”），再用本程序连。 |
+| 电量显示 0% / 0.00 V | WT901BLE67 这类模块不通过 BLE 上报电池（寄存器 `0x64` 返回 0），属正常；带电池的型号会显示。 |
+| `Failed to connect`、`le-connection-abort` | 距离/干扰问题：靠近一点（RSSI > −80 更稳），避开 USB3 硬盘坞等 2.4G 干扰源；程序会自动重试 3 次并自动重连。 |
+
+
 
 | 项 | 值 |
 |---|---|

@@ -21,6 +21,64 @@ class WitError(RuntimeError):
     pass
 
 
+def _bluetooth_connected_state(address: str) -> Optional[bool]:
+    """借助 bluetoothctl 判断该地址当前是否已被系统/其它程序连上（查不到返回 None）。"""
+    import subprocess
+
+    try:
+        out = subprocess.run(["bluetoothctl", "info", address],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        if line.strip().startswith("Connected:"):
+            return line.split(":", 1)[1].strip().lower() == "yes"
+    return None
+
+
+def trust_device(address: str) -> bool:
+    """把设备标记为 trusted —— BlueZ 会把 trusted 设备永久保留在缓存里，
+    这样以后可以脱离扫描直接 ``BleakClient(address)`` 连接（模块不广播时也能连）。"""
+    import subprocess
+
+    try:
+        subprocess.run(["bluetoothctl", "trust", address],
+                       capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return True
+
+
+def is_trusted(address: str) -> Optional[bool]:
+    import subprocess
+
+    try:
+        out = subprocess.run(["bluetoothctl", "info", address],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        if line.strip().startswith("Trusted:"):
+            return line.split(":", 1)[1].strip().lower() == "yes"
+    return None
+def clear_pending_connection(address: str, wait: float = 2.0) -> bool:
+    """清理 BlueZ 里卡住的连接（GNOME 蓝牙面板点过 / 上次异常退出留下的半连接）。
+
+    在 GNOME 蓝牙设置里点“连接”会占用设备，之后第三方程序连接就会一直报
+    ``org.bluez.Error.InProgress``；先 disconnect 掉再连就正常了。
+    """
+    import subprocess
+    import time
+
+    try:
+        subprocess.run(["bluetoothctl", "disconnect", address],
+                       capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    time.sleep(wait)
+    return _bluetooth_connected_state(address) is not True
+
+
 class WitClient:
     """维特智能 BLE 5.0 传感器客户端（WT9011DCL-BT50 / BWT901BLE5.0 等）。"""
 
@@ -31,17 +89,21 @@ class WitClient:
         on_sample: Optional[Callable[[P.Sample], None]] = None,
         on_register: Optional[Callable[[P.RegisterFrame], None]] = None,
         on_status: Optional[Callable[[str], None]] = None,
+        on_disconnect: Optional[Callable[[bool], None]] = None,
     ) -> None:
         self.address = address
         self.mode = mode  # 0=加速度/角速度/角度，1=位移/位移速度/角度
         self.on_sample = on_sample
         self.on_register = on_register
         self.on_status = on_status
+        self.on_disconnect = on_disconnect
+        self._manual_disconnect = False
 
         self.client: Optional[BleakClient] = None
         self.device: Optional[BLEDevice] = None
         self.parser = P.PacketParser()
         self.samples = 0
+        self.corrupt_frames = 0
         self.last_sample: Optional[P.Sample] = None
         self.started_at = 0.0
 
@@ -88,14 +150,46 @@ class WitClient:
         return result
 
     async def connect(self, address: Optional[str] = None, scan_timeout: float = 10.0,
-                      connect_timeout: float = 20.0) -> str:
-        """连接设备：优先用已记住的地址，否则扫描并连接信号最强的维特设备。"""
+                      connect_timeout: float = 20.0, force_scan: bool = False,
+                      attempts: int = 3) -> str:
+        """连接设备。
+
+        默认策略（实测维特 BLE 模块连过一次后往往不再广播，直接扫描会"找不到"）：
+          1. 有地址 → 先不扫描，直接用地址连（BlueZ 缓存里已有该设备就能连上）；
+          2. 直连失败 → 按地址扫描，再退化为按名字前缀扫描（WT/BWT）；
+          3. 没有地址 → 扫描并连接信号最强的维特设备。
+        """
         target = address or self.address
         if target:
-            self._log(f"连接 {target} ...")
-            device = await BleakScanner.find_device_by_address(target, timeout=scan_timeout)
-            if device is None:
-                raise WitError(f"未找到设备 {target}（是否已开机/在范围内？）")
+            self.address = target
+            await self._ensure_trusted(target)
+            last_error: Optional[Exception] = None
+            for round_no in range(1, max(1, attempts) + 1):
+                if not force_scan:
+                    try:
+                        return await self._connect_by_address(target, connect_timeout)
+                    except Exception as exc:  # noqa: BLE001
+                        last_error = exc
+                        self._log(f"直接按地址连接失败（{type(exc).__name__}: {exc}），改为扫描查找…")
+                device = await self._find_by_scan(target, scan_timeout)
+                if device is not None:
+                    return await self.connect_device(device, connect_timeout)
+                if round_no < attempts:
+                    self._log(f"第 {round_no}/{attempts} 轮没找到设备，3 秒后重试"
+                              f"（确认模块已开机、指示灯在闪）…")
+                    await asyncio.sleep(3)
+            state = _bluetooth_connected_state(target)
+            extra = ""
+            if state is True:
+                extra = ("\n  4) 该设备当前已被系统/其它程序占用（BlueZ 显示已连接）："
+                         "请在 GNOME 蓝牙设置或 bluetoothctl 里先断开它。")
+            raise WitError(
+                f"连接 {target} 失败（{last_error}）。请确认：\n"
+                f"  1) 传感器已开机（指示灯闪）；\n"
+                f"  2) 没有被手机 App、Windows 上位机或 GNOME 蓝牙设置占用；\n"
+                f"  3) 模块离电脑近一些（RSSI 太低会连不上）；\n"
+                f"  4) 必要时给模块断电重启一次再试。{extra}"
+            )
             return await self.connect_device(device, connect_timeout)
 
         self._log("扫描维特设备（WT/BWT 开头）…")
@@ -106,21 +200,74 @@ class WitClient:
         self._log(f"发现 {device.name or device.address} (RSSI {rssi})")
         return await self.connect_device(device, connect_timeout)
 
+    async def _ensure_trusted(self, address: str) -> None:
+        """确保设备被 BlueZ 记住（trusted 不会被清除），失败也不影响连接。"""
+        loop = asyncio.get_running_loop()
+        state = await loop.run_in_executor(None, is_trusted, address)
+        if state is False:
+            if await loop.run_in_executor(None, trust_device, address):
+                self._log("已把设备标记为 trusted（以后可以免扫描直连）")
+
+    async def _connect_by_address(self, address: str, connect_timeout: float = 20.0) -> str:
+        """跳过扫描，直接用地址连接（BlueZ 已知设备）。
+
+        遇到 ``InProgress``（BlueZ 里还有半连接/别的程序正在连）时，
+        自动先 disconnect 清掉再重试，最多 3 次。
+        """
+        self._log(f"连接 {address} …")
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, 4):
+            try:
+                client = BleakClient(address, timeout=connect_timeout,
+                                     disconnected_callback=self._on_disconnected)
+                await client.connect()
+                return await self._after_connect(client, address)
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                text = f"{type(exc).__name__}: {exc}"
+                if "InProgress" in text or "in progress" in text.lower():
+                    self._log("BlueZ 里还有一个占用的连接，正在清理后重试…")
+                    await asyncio.get_running_loop().run_in_executor(
+                        None, clear_pending_connection, address)
+                    continue
+                if attempt < 3 and ("Not connected" in text or "Failed to connect" in text
+                                    or "le-connection-abort" in text):
+                    self._log(f"连接未成功，2 秒后重试（{attempt}/3）…")
+                    await asyncio.sleep(2)
+                    continue
+                raise
+        raise WitError(f"连接 {address} 失败：{last_exc}")
+
+    async def _find_by_scan(self, address: str, scan_timeout: float, attempts: int = 2):
+        """先按地址精确扫描，再退化为按名字前缀扫描。"""
+        for i in range(attempts):
+            self._log(f"扫描查找 {address} …（第 {i + 1}/{attempts} 次）")
+            device = await BleakScanner.find_device_by_address(address, timeout=scan_timeout)
+            if device is not None:
+                return device
+        self._log("按地址没扫到，尝试按名字前缀（WT/BWT）扫描…")
+        candidates = await self.scan(timeout=scan_timeout)
+        return candidates[0][0] if candidates else None
+
     async def connect_device(self, device: BLEDevice, connect_timeout: float = 20.0) -> str:
-        self.device = device
-        self.address = device.address
+        client = BleakClient(device, timeout=connect_timeout,
+                             disconnected_callback=self._on_disconnected)
+        await client.connect()
+        return await self._after_connect(client, device.name or device.address, device)
+
+    async def _after_connect(self, client: BleakClient, label: str,
+                             device: Optional[BLEDevice] = None) -> str:
+        """连接成功后的公共收尾：解析特征值 + 订阅通知。"""
+        self.client = client
+        if device is not None:
+            self.device = device
+        self.address = client.address
         self.parser.reset()
-        self.client = BleakClient(
-            device,
-            timeout=connect_timeout,
-            disconnected_callback=self._on_disconnected,
-        )
-        await self.client.connect()
         self._notify_char, self._write_char = self._resolve_characteristics()
         await self.client.start_notify(self._notify_char, self._on_notify)
         self.started_at = time.time()
         self.samples = 0
-        self._log(f"已连接 {device.name or device.address}")
+        self._log(f"已连接 {label}")
         return self.address
 
     def _resolve_characteristics(self):
@@ -146,6 +293,7 @@ class WitClient:
         return notify, write
 
     async def disconnect(self) -> None:
+        self._manual_disconnect = True
         if self.client and self.client.is_connected:
             try:
                 if self._notify_char is not None:
@@ -154,15 +302,29 @@ class WitClient:
                 pass
             await self.client.disconnect()
         self._log("已断开")
+        self._fire_disconnect(True)
+
+    def _fire_disconnect(self, manual: bool) -> None:
+        if self.on_disconnect:
+            self.on_disconnect(manual)
 
     def _on_disconnected(self, _client: BleakClient) -> None:
-        self._log("连接已断开")
+        manual = self._manual_disconnect
+        self._manual_disconnect = False
+        if not manual:
+            self._log("连接意外断开（对端掉线或超出范围）")
+        self._fire_disconnect(manual)
 
     # ------------------------------------------------------------ 通知回调
     def _on_notify(self, _char, data: bytearray) -> None:
         for frame in self.parser.feed(bytes(data)):
             if frame[1] == P.FLAG_SENSOR:
                 sample = P.parse_sensor_frame(frame, mode=self.mode, t=time.time())
+                if not P.is_plausible(sample):
+                    self.corrupt_frames += 1
+                    if self.corrupt_frames <= 5:
+                        self._log(f"丢弃 1 帧异常数据（错帧累计 {self.corrupt_frames}，多是 BLE 丢字节导致）")
+                    continue
                 self.samples += 1
                 self.last_sample = sample
                 if self.on_sample:
@@ -317,7 +479,11 @@ class WitClient:
 
     # ------------------------------------------------------------ 便捷读取
     async def read_battery(self) -> dict:
+        """电量：刚连上时模块偶尔会回 0，这里自动重读一次。"""
         raw = await self.read_value(0x64)
+        if raw <= 0:
+            await asyncio.sleep(0.2)
+            raw = await self.read_value(0x64)
         return {"raw": raw, "voltage": raw / 100.0, "percent": P.battery_percent(raw)}
 
     async def read_version(self) -> str:

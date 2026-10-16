@@ -35,6 +35,7 @@ import pyqtgraph as pg
 from . import protocol as P
 from .client import WitClient
 from .sim import SimulatedWitClient
+from . import config as appconfig
 
 CSV_FIELDS = ["t", "mode", "ax", "ay", "az", "gx", "gy", "gz",
               "pos_e", "pos_n", "pos_u", "vel_e", "vel_n", "vel_u",
@@ -65,6 +66,7 @@ class BleWorker(QThread):
     infoReady = Signal(dict)
     auxReady = Signal(dict)
     connChanged = Signal(bool)
+    disconnected = Signal(bool)  # True=手动断开
     errorMsg = Signal(str)
 
     def __init__(self, mock: bool = False, address: Optional[str] = None, parent=None) -> None:
@@ -90,11 +92,13 @@ class BleWorker(QThread):
         if self.client is None:
             if self.mock:
                 self.client = SimulatedWitClient(on_sample=self.sampleReady.emit,
-                                                 on_status=self.statusMsg.emit)
+                                                 on_status=self.statusMsg.emit,
+                                                 on_disconnect=self.disconnected.emit)
             else:
                 self.client = WitClient(address=self.address,
                                         on_sample=self.sampleReady.emit,
-                                        on_status=self.statusMsg.emit)
+                                        on_status=self.statusMsg.emit,
+                                        on_disconnect=self.disconnected.emit)
         return self.client
 
     def submit(self, coro_factory) -> None:
@@ -123,6 +127,9 @@ class BleWorker(QThread):
         self.submit(job)
 
     def do_connect(self, address: Optional[str] = None, scan_timeout: float = 10.0) -> None:
+        if address:
+            self.address = address
+
         async def job():
             client = self._ensure_client()
             await client.connect(address or self.address, scan_timeout=scan_timeout)
@@ -254,6 +261,7 @@ class MainWindow(QMainWindow):
 
         self.worker = BleWorker(mock=mock, address=address)
         self.worker.start()
+        self.cfg = appconfig.load()
         self.samples_seen = 0
         self.last_sample: Optional[P.Sample] = None
         self.aux: dict = {}
@@ -275,6 +283,9 @@ class MainWindow(QMainWindow):
         self.aux_timer.timeout.connect(self._poll_aux)
         self.aux_timer.start(1000)
 
+        # 启动后自动连接上次用过的设备
+        QTimer.singleShot(600, self._auto_connect_if_configured)
+
     # ---------------- UI
     def _build_ui(self) -> None:
         central = QWidget()
@@ -293,6 +304,13 @@ class MainWindow(QMainWindow):
         self.btn_info.setEnabled(False)
         for w in (self.btn_scan, self.cmb_dev, self.btn_connect, self.btn_disconnect, self.btn_info):
             top.addWidget(w)
+        self.chk_autoconn = QCheckBox("记住并自动连接")
+        self.chk_autoconn.setChecked(bool(self.cfg.get("auto_connect", True)))
+        self.chk_autoconn.setToolTip("启动时自动连接上次用过的设备；连接成功后记住该设备地址")
+        top.addWidget(self.chk_autoconn)
+        self.chk_reconnect = QCheckBox("掉线自动重连")
+        self.chk_reconnect.setChecked(bool(self.cfg.get("auto_reconnect", True)))
+        top.addWidget(self.chk_reconnect)
         top.addStretch(1)
         self.lbl_state = QLabel("未连接")
         self.lbl_state.setStyleSheet("color:#888888")
@@ -362,6 +380,10 @@ class MainWindow(QMainWindow):
         self.chk_autoscale = QCheckBox("自动缩放")
         self.chk_autoscale.setChecked(True)
         ctrl.addWidget(self.chk_autoscale)
+        self.chk_denoise = QCheckBox("去毛刺")
+        self.chk_denoise.setChecked(True)
+        self.chk_denoise.setToolTip("对曲线做 3 点中值滤波，只影响显示，CSV 记录仍是原始值")
+        ctrl.addWidget(self.chk_denoise)
         mid.addLayout(ctrl)
 
         self.plot = pg.PlotWidget(background="#101820")
@@ -523,7 +545,43 @@ class MainWindow(QMainWindow):
         self.worker.infoReady.connect(self._on_info)
         self.worker.auxReady.connect(self._on_aux)
         self.worker.connChanged.connect(self._on_conn)
+        self.worker.disconnected.connect(self._on_worker_disconnected)
         self.worker.sampleReady.connect(self._on_sample)
+        self.chk_autoconn.toggled.connect(lambda v: appconfig.update(auto_connect=bool(v)))
+        self.chk_reconnect.toggled.connect(lambda v: appconfig.update(auto_reconnect=bool(v)))
+
+    # ---------------- 自动连接 / 自动重连
+    def _auto_connect_if_configured(self) -> None:
+        addr = self.worker.address or self.cfg.get("last_address") or ""
+        if self.worker.mock or not addr or not self.chk_autoconn.isChecked():
+            return
+        self._select_device(addr, "(上次连接)")
+        self._log(f"自动连接 {addr} …")
+        self.worker.do_connect(addr)
+
+    def _select_device(self, address: str, note: str = "") -> None:
+        idx = self.cmb_dev.findData(address)
+        if idx < 0:
+            self.cmb_dev.addItem(f"{address}   {note}".strip(), address)
+            idx = self.cmb_dev.count() - 1
+        self.cmb_dev.setCurrentIndex(idx)
+
+    def _on_worker_disconnected(self, manual: bool) -> None:
+        if manual or not self.chk_reconnect.isChecked():
+            return
+        self._reconnect_attempts = getattr(self, "_reconnect_attempts", 0) + 1
+        if self._reconnect_attempts > 5:
+            self._log("自动重连已尝试 5 次仍未成功，停止重连（可手动点“连接”）")
+            return
+        addr = self.cfg.get("last_address") or self.worker.address
+        if not addr:
+            return
+        self._log(f"3 秒后自动重连（第 {self._reconnect_attempts} 次）：{addr}")
+        QTimer.singleShot(3000, lambda: self._reconnect_now(addr))
+
+    def _reconnect_now(self, addr: str) -> None:
+        if self.chk_reconnect.isChecked() and self.lbl_state.text() != "已连接":
+            self.worker.do_connect(addr)
 
     # ---------------- 动作
     def _connect(self) -> None:
@@ -581,10 +639,22 @@ class MainWindow(QMainWindow):
         self.btn_connect.setEnabled(not connected)
         self.btn_disconnect.setEnabled(connected)
         self.btn_info.setEnabled(connected)
+        # 连接期间禁止扫描：BLE 只允许一个连接，扫描会挤压数据通道（表现为曲线毛刺）
+        self.btn_scan.setEnabled(not connected)
+        self.btn_scan.setToolTip("已连接时无需扫描（BLE 只允许一个连接）" if connected
+                                 else "扫描附近的维特设备")
         self.lbl_state.setText("已连接" if connected else "未连接")
         self.lbl_state.setStyleSheet("color:#2ecc71" if connected else "color:#888888")
-        if not connected:
+        if connected:
+            self._reconnect_attempts = 0
+            addr = getattr(self.worker, "address", None)
+            if addr:
+                self._select_device(addr, "(上次连接)")
+                if self.chk_autoconn.isChecked():
+                    self.cfg = appconfig.update(last_address=addr)
+        else:
             self.last_sample = None
+            self.lbl_rate.setText("-")
 
     def _on_info(self, info: dict) -> None:
         bat = info.get("battery")
@@ -666,7 +736,11 @@ class MainWindow(QMainWindow):
                         break
                     xs.append(t)
                     ys.append(v)
-                curve.setData(xs[::-1], ys[::-1])
+                xs.reverse()
+                ys.reverse()
+                if self.chk_denoise.isChecked() and len(ys) > 2:
+                    ys = P.median3(ys)
+                curve.setData(xs, ys)
             self.plot.setXRange(max(0.0, now - self.window_seconds), now, padding=0.02)
             if self.chk_autoscale.isChecked():
                 self.plot.enableAutoRange(axis=pg.ViewBox.YAxis)
@@ -734,13 +808,26 @@ class MainWindow(QMainWindow):
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="WT9011DCL-BT50 Linux 上位机")
-    parser.add_argument("--mock", action="store_true", help="模拟模式（无硬件演示）")
-    parser.add_argument("--addr", help="设备 MAC 地址")
+    parser.add_argument("--mock", action="store_true", help="模拟模式（离线开发/演示，无硬件）")
+    parser.add_argument("--addr", help="设备 MAC 地址（省略则自动连接上次用过的设备）")
+    parser.add_argument("--screenshot", help="启动若干秒后把窗口截图保存到该路径（自检用）")
+    parser.add_argument("--screenshot-after", type=float, default=15.0, help="截图延迟秒数")
+    parser.add_argument("--exit-after-screenshot", action="store_true", help="截完图自动退出（自检用）")
     args = parser.parse_args(argv)
 
     app = QApplication(sys.argv[:1] + ["wt9011"])
     pg.setConfigOptions(antialias=True)
     win = MainWindow(mock=args.mock, address=args.addr)
+
+    if args.screenshot:
+        def take_shot() -> None:
+            win.grab().save(args.screenshot)
+            print(f"截图已保存：{args.screenshot}", flush=True)
+            if args.exit_after_screenshot:
+                win.close()
+
+        QTimer.singleShot(int(args.screenshot_after * 1000), take_shot)
+
     win.show()
     return app.exec()
 

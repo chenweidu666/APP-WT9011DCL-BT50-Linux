@@ -117,6 +117,32 @@ class PacketParser:
         self._buf.clear()
 
 
+def is_plausible(sample: Sample, margin: float = 0.5) -> bool:
+    """过滤物理上不可能的帧（BLE 丢字节/错位时会解出这种值）。
+
+    满量程：加速度 ±16g、角速度 ±2000°/s、角度 roll/yaw ±180°、pitch ±90°。
+    超出满量程一点点的就是错帧，直接丢，别让毛刺进曲线和 CSV。
+    """
+    if sample.mode != 1:
+        if max(abs(sample.ax), abs(sample.ay), abs(sample.az)) > 16.0 + margin:
+            return False
+        if max(abs(sample.gx), abs(sample.gy), abs(sample.gz)) > 2000.0 + margin:
+            return False
+    if abs(sample.roll) > 180.0 + margin or abs(sample.yaw) > 180.0 + margin:
+        return False
+    if abs(sample.pitch) > 90.0 + margin:
+        return False
+    return True
+
+
+def median3(values: Sequence[float]) -> List[float]:
+    """3 点中值滤波：去掉单点毛刺（显示用，不动原始记录）。"""
+    out = list(values)
+    for i in range(1, len(values) - 1):
+        out[i] = sorted((values[i - 1], values[i], values[i + 1]))[1]
+    return out
+
+
 def parse_sensor_frame(frame: bytes, mode: int = 0, t: float = 0.0) -> Sample:
     """解析 0x55 0x61 数据包（20 字节，9 个 int16 小端）。"""
     if len(frame) != PACKET_LEN or frame[0] != HEADER or frame[1] != FLAG_SENSOR:

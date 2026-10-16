@@ -143,6 +143,24 @@ class TestHelpers(unittest.TestCase):
         self.assertAlmostEqual(P.register_scaled(0x40, 2650), 26.5, places=4)    # 温度 ℃
         self.assertIsNone(P.register_scaled(0x64, 400))                          # 电量无换算系数
 
+    def test_plausibility_filter(self):
+        good = P.Sample(ax=0.01, ay=-0.04, az=0.99, gx=1.2, gy=-0.3, gz=4.9,
+                        roll=-2.6, pitch=-1.7, yaw=5.5)
+        self.assertTrue(P.is_plausible(good))
+        # 满量程边界仍算合法
+        self.assertTrue(P.is_plausible(P.Sample(az=16.0, gx=2000.0, roll=180.0, pitch=-90.0, yaw=180.0)))
+        # BLE 丢字节错位会解出这种值 → 丢弃
+        self.assertFalse(P.is_plausible(P.Sample(ax=150.0, az=1.0)))
+        self.assertFalse(P.is_plausible(P.Sample(gz=3000.0, az=1.0)))
+        self.assertFalse(P.is_plausible(P.Sample(yaw=200.0, az=1.0)))
+        self.assertFalse(P.is_plausible(P.Sample(pitch=140.0, az=1.0)))
+
+    def test_median3_removes_single_spike(self):
+        data = [1.0, 1.1, 99.0, 1.2, 1.1, 1.0]
+        self.assertEqual(P.median3(data)[2], 1.2)
+        self.assertEqual(P.median3([5.0]), [5.0])
+        self.assertEqual(P.median3([1.0, 2.0]), [1.0, 2.0])
+
 
 if __name__ == "__main__":
     unittest.main()

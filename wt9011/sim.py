@@ -20,12 +20,14 @@ class SimulatedWitClient:
         on_sample: Optional[Callable[[P.Sample], None]] = None,
         on_register: Optional[Callable[[P.RegisterFrame], None]] = None,
         on_status: Optional[Callable[[str], None]] = None,
+        on_disconnect: Optional[Callable[[bool], None]] = None,
         rate_hz: float = 10.0,
         mode: int = 0,
     ) -> None:
         self.on_sample = on_sample
         self.on_register = on_register
         self.on_status = on_status
+        self.on_disconnect = on_disconnect
         self.mode = mode
         self.rate_hz = rate_hz
         self.address = "MOCK:00:11:22:33:44:55"
@@ -70,6 +72,8 @@ class SimulatedWitClient:
                 pass
             self._task = None
         self._log("已断开")
+        if self.on_disconnect:
+            self.on_disconnect(True)
 
     async def stream(self):
         queue: "asyncio.Queue[P.Sample]" = asyncio.Queue(maxsize=256)
