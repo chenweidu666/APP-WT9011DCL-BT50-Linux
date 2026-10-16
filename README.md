@@ -2,6 +2,9 @@
 
 维特智能（WitMotion）**WT9011DCL-BT50** 蓝牙 5.0 姿态传感器的 Linux 端上位机替代品。
 
+- 仓库：<https://github.com/chenweidu666/APP-WT9011DCL-BT50-Linux>
+- 许可：[MIT](LICENSE)（第三方独立实现，与厂商无隶属关系）
+
 厂商只提供 Windows 上位机（`WitMotion(V2026.9.30.0).zip`，.NET Framework 4.6.2 + WPF），
 这个仓库用 **Python + bleak(BlueZ) + PySide6** 重新实现其常用功能，直接跑在 Linux 上。
 
@@ -121,7 +124,11 @@ pip install -e .
 | 保存 | `FF AA 00 00 00`（`01` 恢复默认、`FF` 重启） |
 | 换算 | 加速度 `/32768*16g`；角速度 `/32768*2000°/s`；角度 `/32768*180°`；温度 `/100 ℃`；四元数 `/32768`；磁场原始值 mG，上位机口径 = `raw/120` |
 
-协议原始文档（语雀镜像，已清洗成可读 Markdown）见 `docs/`。
+协议来源（厂商公开文档，正文不随仓库分发，见 `docs/README.md`）：
+[蓝牙 5.0 通讯协议](https://wit-motion.yuque.com/wumwnr/docs/ycui87fgg1mepk1u) ·
+[手机 APP 数据解析与指令发送](https://wit-motion.yuque.com/wumwnr/ltst03/clnc7v) ·
+[官方示例仓库 WITMOTION/WitBluetooth_BWT901BLE5_0](https://github.com/WITMOTION/WitBluetooth_BWT901BLE5_0) ·
+[BLE 5.0 协议 GitBook](https://support-73.gitbook.io/witmotion-sdk/ble-5.0-protocol)
 
 ## 代码结构
 
@@ -136,7 +143,9 @@ tests/
 └── test_protocol.py  协议解析/组包单测（用文档里的字节样例做断言）
 tools/
 └── smoke_gui.py      界面冒烟测试（offscreen + 模拟数据，可出截图）
-docs/            厂商协议文档镜像（清洗版）+ 界面截图
+docs/                协议来源链接 + 界面截图（厂商文档正文不随仓库分发）
+packaging/           应用图标（SVG）
+install-desktop.sh   注册到 Ubuntu 应用菜单
 ```
 
 ## 验证情况
