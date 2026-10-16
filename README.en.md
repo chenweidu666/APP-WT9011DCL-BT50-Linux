@@ -9,7 +9,7 @@ Linux/Wine). This project re-implements the useful parts with
 **Python + bleak (BlueZ) + PySide6**.
 
 - Repository: <https://github.com/chenweidu666/APP-WT9011DCL-BT50-Linux>
-- Documentation: [APP-WT9011DCL-BT50-Linux-Docs](https://github.com/chenweidu666/APP-WT9011DCL-BT50-Linux-Docs) (private)
+- Documentation: [DOCS-WT9011DCL-BT50-Linux](https://github.com/chenweidu666/DOCS-WT9011DCL-BT50-Linux) (private)
 - License: [MIT](LICENSE) — independent third-party project, not affiliated with WitMotion
 
 ```
