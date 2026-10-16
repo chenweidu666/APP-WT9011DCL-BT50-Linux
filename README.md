@@ -40,7 +40,7 @@
 系统要求：Linux + BlueZ（`bluetoothd` 运行中，有 BLE 适配器，普通用户即可，无需 root）。
 
 ```bash
-cd WT9011DCL-BT50-Linux
+cd APP-WT9011DCL-BT50-Linux
 
 # 方式一：直接在当前 Python 环境安装依赖
 pip install -r requirements.txt          # bleak + PySide6 + pyqtgraph
@@ -110,6 +110,7 @@ pip install -e .
 |---|---|
 | `org.bluez.Error.InProgress` / `Operation already in progress` | BlueZ 里还挂着一次半连接（在 GNOME 蓝牙设置里点过这个设备最常见）。客户端会**自动**执行 `bluetoothctl disconnect <地址>` 清掉再重试；也可手动清：`bluetoothctl disconnect EE:AA:BB:...`，实在不行 `sudo systemctl restart bluetooth`。 |
 | 第一次能连，之后 `scan` 扫不到设备 | 维特 BLE 模块连过一次后常常停止广播。本程序默认**不扫描、直接按地址连**（`BleakClient(address)`），所以照常能连；只要别把地址忘了（界面会自动记住上次设备）。 |
+| 上次程序被强制结束，之后一直连不上 / 扫不到 | BlueZ 里留下了"已连接"残留（`bluetoothctl info` 显示 `Connected: yes`，但实际没有客户端）。程序会在连接前**自动释放**这条残留链路再连；也可手动 `bluetoothctl disconnect <地址>`。 |
 | 手机 App / Windows 上位机 / GNOME 蓝牙面板连过之后连不上 | BLE 只允许一个中心设备。先在对方断开（GNOME：蓝牙设置里那个设备点“断开”），再用本程序连。 |
 | 电量显示 0% / 0.00 V | WT901BLE67 这类模块不通过 BLE 上报电池（寄存器 `0x64` 返回 0），属正常；带电池的型号会显示。 |
 | `Failed to connect`、`le-connection-abort` | 距离/干扰问题：靠近一点（RSSI > −80 更稳），避开 USB3 硬盘坞等 2.4G 干扰源；程序会自动重试 3 次并自动重连。 |
@@ -167,7 +168,10 @@ python3 tools/smoke_gui.py --screenshot /tmp/gui.png   # 界面冒烟（offscree
 - ✅ 协议单测 17/17 通过（含文档样例：磁场帧 `55713A00680169007A00` → 360/105/122；版本号样例 → `10080.1.3`；各条指令字节与文档一致）
 - ✅ `BleakScanner` 在本机可直接扫描（无需 root），能列出周围 BLE 设备
 - ✅ 界面在模拟数据下运行正常：数值刷新、曲线、姿态仪、CSV 记录（10 Hz → 15 行/1.5 s）、窗口关闭 0.3 s 内正常退出、无异常
-- ⏳ **真实硬件连通性待现场验证**：传感器开机 → `./run.sh cli scan`，应出现 `WT…` 设备
+- ✅ **真实硬件已联调通过**（WT901BLE67，MAC 略）：`BleakScanner` 扫到设备 → 约 5–6 s 连上 →
+  10 Hz 稳定数据流（静止时 AZ≈1.00 g）→ 电量 100%/4.27 V、版本 `10080.1.22`、温度 30.5 ℃、
+  磁场与四元数正常读取；期间遇到并修掉了三类真实故障：模块连过后不再广播、BlueZ
+  `InProgress`、上次异常退出留下"已连接"残留
 
 ## 已知限制
 
